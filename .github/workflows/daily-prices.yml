@@ -1,0 +1,78 @@
+name: Daily price collection
+
+# Opt-in: this does nothing until you set the repository variable
+# PRICE_TRACKER_ENABLED=true (Settings -> Secrets and variables -> Actions -> Variables).
+on:
+  schedule:
+    # GitHub often delays or drops scheduled runs, especially at minute 0, so
+    # try every 20 minutes. --collect-if-due makes the collector run only once
+    # per day, at or after PRICE_TRACKER_DAILY_TIME in PRICE_TRACKER_TIMEZONE.
+    # Narrow the hour range to around your daily time to use fewer Actions minutes.
+    - cron: "7,27,47 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-price-collection
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    if: vars.PRICE_TRACKER_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Secrets keep your shop and shopping list private even in a public repo.
+      PRICE_TRACKER_STORE_URL: ${{ secrets.PRICE_TRACKER_STORE_URL }}
+      PRICE_TRACKER_PRODUCTS: ${{ secrets.PRICE_TRACKER_PRODUCTS }}
+      PRICE_TRACKER_STORE_NAME: ${{ vars.PRICE_TRACKER_STORE_NAME }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      PRICE_TRACKER_DAILY_TIME: ${{ vars.PRICE_TRACKER_DAILY_TIME || '10:00' }}
+      PRICE_TRACKER_TIMEZONE: ${{ vars.PRICE_TRACKER_TIMEZONE || 'UTC' }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      # Price history lives in the Actions cache, not in the repository, so it
+      # is never published. GitHub evicts caches unused for 7 days.
+      - name: Restore price history
+        uses: actions/cache/restore@v4
+        with:
+          path: data/prices.sqlite3
+          key: price-history-${{ github.run_id }}
+          restore-keys: price-history-
+
+      - name: Remember the history checksum
+        id: before
+        run: echo "sum=$( (sha256sum data/prices.sqlite3 2>/dev/null || true) | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Collect scheduled prices
+        if: github.event_name == 'schedule'
+        run: python app.py --sync-products --collect-if-due
+
+      - name: Collect prices on demand
+        if: github.event_name == 'workflow_dispatch'
+        run: python app.py --sync-products --collect
+
+      - name: Check whether the history changed
+        id: after
+        if: always()
+        run: echo "sum=$( (sha256sum data/prices.sqlite3 2>/dev/null || true) | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Save price history
+        if: always() && steps.after.outputs.sum != '' && steps.after.outputs.sum != steps.before.outputs.sum
+        uses: actions/cache/save@v4
+        with:
+          path: data/prices.sqlite3
+          key: price-history-${{ github.run_id }}

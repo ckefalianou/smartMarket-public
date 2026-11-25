@@ -1,0 +1,5 @@
+# Copy to products.txt (git-ignored) and add one product URL per line.
+# All URLs must belong to PRICE_TRACKER_STORE_URL. Lines starting with # are ignored.
+# Removing a URL also removes its price history on the next sync.
+https://www.example-shop.com/category/some-product-123
+https://www.example-shop.com/category/another-product-456

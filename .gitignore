@@ -221,3 +221,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# smartMarket: keep your shop, shopping list and price history local
+data/
+products.txt
+*.sqlite3
