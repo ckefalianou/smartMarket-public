@@ -1,98 +1,121 @@
-# smartMarket 🛒
+# Price Tracker
 
-> A small side project / weekend experiment: "is this actually a good price, or does it just *look* like a deal?"
+A small, self-hosted tracker for online grocery product prices. It records
+daily prices, keeps local history in SQLite, and can send a Telegram report
+showing price drops, below-average prices, and multi-buy offers converted to
+an effective per-item price. A local dashboard displays tracked products and
+their history.
 
-smartMarket is a tiny, self-hosted price tracker for an online grocery shop. You give it a handful of product pages. Once a day it records each price, remembers the history, and sends you a short report as an image on Telegram:
+The repository contains application code and examples only. Do not commit your
+`.env`, `products.txt`, or `data/prices.sqlite3`; these are ignored by Git.
 
-- **↓** the price dropped since the last check
-- **★** the price is below its own historical average
-- **N+M offers** (e.g. "2+1 free") are converted into the real per-item price, so a multi-buy is compared fairly with a plain discount
+## Run locally
 
-There's also a small local dashboard with the last two weeks of history and the "cheapest weekday so far" for each product.
-
-It's deliberately simple: one Python file, SQLite, Pillow for the report image, and no framework. It's an experiment, not a product, so expect rough edges.
-
-## How it works
-
-```
-products list ──► fetch each product page once a day ──► parse name / price / offer
-                                                              │
-                     Telegram report image ◄── compare with ◄─┘
-                     + local dashboard         history (SQLite)
-```
-
-The parser reads common, standard page markup: `og:title`, `<h1>`, `itemprop="price"`, `data-price` attributes and JSON-LD `Product`/`Offer` data. Categories come from breadcrumbs. Many shops expose some of these, but every site is different, so you may need to adjust `ProductPageParser` in `app.py` for yours.
-
-> **Note:** the dashboard and the Telegram report are currently in Greek, because that's where the experiment started. The code and configuration are in English.
-
-## Quick start
-
-Requires Python 3.11+.
+Requires Python 3.11 or newer.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-
-cp .env.example .env               # then set PRICE_TRACKER_STORE_URL
-cp products.example.txt products.txt   # then add your product URLs
-
-python app.py --sync-products      # dashboard on http://127.0.0.1:8000
+python -m pip install -r requirements.txt
+cp .env.example .env
+cp products.example.txt products.txt
 ```
 
-Click the "collect now" button (**Συλλογή τώρα**) in the dashboard to record the first prices. While the app is running, it also collects automatically once a day at `PRICE_TRACKER_DAILY_TIME`.
-
-Other commands:
+Edit `.env` and set `PRICE_TRACKER_STORE_URL` to the HTTPS origin of the shop
+you want to track. Add one product URL from that shop per line in
+`products.txt`. To enable Telegram, add your `TELEGRAM_BOT_TOKEN` and
+`TELEGRAM_CHAT_ID` to `.env`. Then start the dashboard:
 
 ```bash
-python app.py --sync-products --collect          # collect right now, then exit
-python app.py --sync-products --collect-if-due   # collect only if today's run is due (for cron)
-python -m unittest discover -s tests             # run the tests
+python app.py
 ```
 
-## Configuration
+Open `http://127.0.0.1:8000` and choose **Collect now**. While the app is
+running, it also collects once a day at the configured local time. You can
+change the time and timezone in `.env`; the defaults are 10:00 and
+`Europe/Athens`.
 
-Everything is set through environment variables or a local `.env` file. Neither the shop nor your shopping list is hard-coded.
+Other useful commands:
 
-| Variable | Required | Description |
-| --- | --- | --- |
-| `PRICE_TRACKER_STORE_URL` | yes | The shop, e.g. `https://www.example-shop.com`. Only product URLs from this host (with or without `www.`) are accepted. |
-| `PRICE_TRACKER_STORE_NAME` | no | Label for the dashboard and report. Defaults to the domain. |
-| `PRICE_TRACKER_PRODUCTS` | no* | Product URLs separated by commas or newlines. Takes priority over the products file. |
-| `PRICE_TRACKER_PRODUCTS_FILE` | no* | File with one URL per line. Defaults to `products.txt`. |
-| `PRICE_TRACKER_DAILY_TIME` | no | Daily collection time, `HH:MM`. Defaults to `10:00`. |
-| `PRICE_TRACKER_TIMEZONE` | no | IANA time zone, e.g. `Europe/Athens`. Defaults to `UTC`. |
-| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | no | Enable the daily Telegram report. |
-| `PRICE_TRACKER_DATABASE` | no | SQLite path. Defaults to `data/prices.sqlite3`. |
-| `PRICE_TRACKER_HOST`, `PRICE_TRACKER_PORT` | no | Dashboard address. Defaults to `127.0.0.1:8000`. |
+```bash
+python app.py --sync-products products.txt --collect
+python app.py --sync-products products.txt --collect-if-due
+python -m unittest discover -s tests
+```
 
-\* Provide your products with one of these two.
+`--sync-products` treats the file as the source of truth: removing a URL also
+removes that product and its price history from the local database.
 
-The product list is the source of truth: `--sync-products` adds new URLs and **removes products (and their history) that are no longer listed**.
+## Optional GitHub Actions and Cloudflare scheduling
 
-`.env`, `products.txt` and `data/` are git-ignored, so your shop, list and history stay on your machine.
+GitHub Actions can collect prices and send the report without your computer
+running. The workflow is opt-in and does not run until you configure the
+repository.
 
-## Running it daily for free with GitHub Actions
+1. In **Settings → Secrets and variables → Actions**, add these repository
+   secrets:
+   - `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` if you want Telegram reports.
+   - `PRICE_TRACKER_STORE_URL`: the HTTPS origin of the shop.
+   - `PRICE_TRACKER_PRODUCTS`: one product URL from that shop per line. This
+     list is written to a temporary, git-ignored `products.txt` during a run.
+2. Add the repository variable `PRICE_TRACKER_ENABLED` with value `true`.
+   Optionally set `PRICE_TRACKER_DAILY_TIME` and `PRICE_TRACKER_TIMEZONE`.
+3. Run **Daily price collection → Run workflow** once from the Actions tab to
+   test the setup.
 
-`.github/workflows/daily-prices.yml` can do the daily collection and the Telegram report without a server. It is **off by default**. To turn it on, in your fork go to **Settings → Secrets and variables → Actions**:
+The workflow stores SQLite history in the GitHub Actions cache, not in the
+repository. GitHub may evict caches that have not been used for seven days, so
+history can restart if scheduled runs stop for that long. The GitHub schedule
+is a fallback and currently checks from 07:00 to 11:47 UTC to cover the default
+10:00 Athens collection time. If you change the workflow timezone or time,
+adjust its cron window too. A daily-run guard prevents a second scheduled
+report.
 
-1. **Secrets:** `PRICE_TRACKER_STORE_URL`, `PRICE_TRACKER_PRODUCTS`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`. Secrets keep your shop and list private even in a public repo.
-2. **Variables:** `PRICE_TRACKER_ENABLED=true`, plus optionally `PRICE_TRACKER_TIMEZONE`, `PRICE_TRACKER_DAILY_TIME` and `PRICE_TRACKER_STORE_NAME`.
-3. In the **Actions** tab, run **Daily price collection → Run workflow** once to test it.
+For a more punctual start, the optional Cloudflare Worker in `cloudflare/`
+dispatches the same GitHub workflow. It uses two UTC Cron triggers and selects
+the one that corresponds to 10:00 in `Europe/Athens` (07:00 UTC in summer,
+08:00 UTC in winter). To set it up:
 
-The price history is kept in the **Actions cache**, not committed to the repo, so nothing is published. GitHub's scheduled runs are best-effort and often late, so the workflow checks every 20 minutes and collects only once per day. Narrow the cron hours if you want to use fewer runner minutes. If no run happens for 7 days, GitHub evicts the cache and the history starts over.
+1. In `cloudflare/wrangler.jsonc`, set `vars.GITHUB_REPOSITORY` to your
+   `owner/repository` and change `name` if you already use that Worker name.
+   The Worker currently targets 10:00 in `Europe/Athens`; change its timezone
+   check and Cron triggers if you need a different schedule.
+2. Create a fine-grained GitHub token restricted to that repository with
+   **Actions: Read and write** permission.
+3. From `cloudflare/`, authenticate with Wrangler, save the token as a Worker
+   secret, and deploy:
 
-## Limitations & caveats
+   ```bash
+   npx wrangler@latest login
+   npx wrangler@latest secret put GITHUB_TOKEN
+   npx wrangler@latest deploy
+   ```
 
-- **Scraping is fragile.** If the shop changes its HTML, the parser reports an error instead of saving a guessed price.
-- Prices are whatever the public product page shows to an anonymous visitor. Region-, store- or loyalty-card-specific prices aren't handled.
-- Offers are detected only when they appear as `N+M` text in the product's own HTML. Offers that are added with JavaScript are missed.
-- The report needs a Greek-capable font (DejaVu, Liberation or Arial) on the machine that renders it.
+The Worker URL is public but returns 404; only its scheduled Cron triggers
+dispatch the workflow. The token is stored as a Cloudflare secret and must not
+be committed. Free services can have execution delays and do not guarantee an
+exact start time.
 
-## Be a good citizen
+## What it tracks
 
-This is meant for **personal use with a small list of products**. Requests are plain HTTPS GETs with a 1-second pause between products, once per day. There's no login, no bypassing of anything, and no bulk catalogue copying. Before pointing it at a site, read that site's terms of use and `robots.txt` and respect them. Don't use it to republish someone else's prices.
+- One effective price per product per day, including recognized `N+M` offers.
+- Changes from the previous recorded price and comparisons with the historical
+  average.
+- The cheapest weekday observed once enough history is available.
+- A Telegram PNG report and a local dashboard.
+
+## Limitations
+
+The tracker validates product URLs against `PRICE_TRACKER_STORE_URL` and reads
+common product-page markup. Shops use different page structures, so you may
+need to adapt the parser in `app.py` for your shop. Prices are those shown to
+an anonymous visitor; the tracker does not select a specific store or region.
+Page changes can break parsing, in which case collection reports an error
+instead of saving a guessed price.
+
+Use a small product list, respect the shop's terms and `robots.txt`, and do not
+republish collected prices without permission.
 
 ## License
 
-MIT, see [LICENSE](LICENSE). No warranty; it's a side project.
+MIT. See [LICENSE](LICENSE).

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://developers.cloudflare.com/workers/wrangler/config-schema.json",
+  "name": "smartmarket-daily-dispatch",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-27",
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": {
+    "GITHUB_REPOSITORY": "ckefalianou/smartMarket-public"
+  },
+  "triggers": {
+    "crons": ["0 7 * * *", "0 8 * * *"]
+  }
+}

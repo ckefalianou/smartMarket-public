@@ -226,3 +226,6 @@ __marimo__/
 data/
 products.txt
 *.sqlite3
+cloudflare/.wrangler/
+cloudflare/node_modules/
+cloudflare/.dev.vars

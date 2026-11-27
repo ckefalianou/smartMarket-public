@@ -43,7 +43,7 @@ def load_dotenv() -> None:
 load_dotenv()
 
 try:
-    TIMEZONE = ZoneInfo(os.getenv("PRICE_TRACKER_TIMEZONE", "UTC"))
+    TIMEZONE = ZoneInfo(os.getenv("PRICE_TRACKER_TIMEZONE", "Europe/Athens"))
 except ZoneInfoNotFoundError as exc:
     raise RuntimeError("PRICE_TRACKER_TIMEZONE must be a valid IANA timezone") from exc
 
@@ -57,13 +57,33 @@ except ValueError as exc:
 DATABASE_PATH = Path(
     os.getenv("PRICE_TRACKER_DATABASE", str(ROOT / "data" / "prices.sqlite3"))
 )
+POSTAL_CODE = os.getenv("PRICE_TRACKER_POSTAL_CODE", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-# The shop whose product pages are tracked, e.g. https://www.example-shop.com.
-STORE_URL = os.getenv("PRICE_TRACKER_STORE_URL", "").strip().rstrip("/")
-STORE_NAME = os.getenv("PRICE_TRACKER_STORE_NAME", "").strip()
-PRODUCTS_FILE = Path(os.getenv("PRICE_TRACKER_PRODUCTS_FILE", str(ROOT / "products.txt")))
-USER_AGENT = "Mozilla/5.0 (compatible; smartMarket/1.0)"
+STORE_URL = os.getenv("PRICE_TRACKER_STORE_URL", "https://www.example.com").strip()
+try:
+    STORE_PARTS = urlsplit(STORE_URL)
+    STORE_PORT = STORE_PARTS.port
+except ValueError as exc:
+    raise RuntimeError("PRICE_TRACKER_STORE_URL must be a valid HTTPS origin") from exc
+if (
+    STORE_PARTS.scheme.lower() != "https"
+    or not STORE_PARTS.hostname
+    or STORE_PARTS.path not in ("", "/")
+    or STORE_PARTS.query
+    or STORE_PARTS.fragment
+    or STORE_PARTS.username
+    or STORE_PARTS.password
+    or STORE_PORT not in (None, 443)
+):
+    raise RuntimeError("PRICE_TRACKER_STORE_URL must be a valid HTTPS origin")
+STORE_HOST = STORE_PARTS.hostname.lower()
+STORE_DOMAIN = STORE_HOST[4:] if STORE_HOST.startswith("www.") else STORE_HOST
+STORE_HOSTS = {STORE_DOMAIN, f"www.{STORE_DOMAIN}"}
+STORE_NAME = (
+    os.getenv("PRICE_TRACKER_STORE_NAME", "").strip()
+    or STORE_DOMAIN.split(".")[0].replace("-", " ").title()
+)
 WEEKDAYS = ("Δευτέρα", "Τρίτη", "Τετάρτη", "Πέμπτη", "Παρασκευή", "Σάββατο", "Κυριακή")
 
 
@@ -85,7 +105,6 @@ class Promotion:
         return f"{self.paid_items}+{self.free_items} ΔΩΡΟ"
 
 
-HOME_BREADCRUMBS = {"αρχική", "home", "homepage", "start"}
 OFFER_PATTERN = re.compile(r"(?<!\d)(\d{1,2})\s*\+\s*(\d{1,2})(?!\d)")
 
 
@@ -122,7 +141,7 @@ class ProductPageParser(HTMLParser):
                 self._breadcrumb_depth = 1
         if self._breadcrumb_depth and tag == "a":
             category = (values.get("title") or "").strip()
-            if category and category.casefold() not in HOME_BREADCRUMBS:
+            if category and category != "Αρχική":
                 self.breadcrumb_categories.append(category)
         if tag in ("script", "style"):
             self._skip_text_tags.append(tag)
@@ -292,42 +311,23 @@ def parse_product_html(
     return name, parse_price(prices[0]), promotion, category
 
 
-def store_host(store_url: str | None = None) -> str:
-    store_url = STORE_URL if store_url is None else store_url
-    if not store_url:
-        raise ValueError("Set PRICE_TRACKER_STORE_URL to the shop you want to track")
-    parts = urlsplit(store_url if "://" in store_url else f"https://{store_url}")
-    if parts.scheme != "https" or not parts.hostname:
-        raise ValueError("PRICE_TRACKER_STORE_URL must be an HTTPS address")
-    return parts.hostname.lower()
-
-
-def store_display_name() -> str:
-    if STORE_NAME:
-        return STORE_NAME
-    try:
-        return store_host().removeprefix("www.")
-    except ValueError:
-        return "Store"
-
-
-def normalize_product_url(raw_url: str, store_url: str | None = None) -> str:
-    host = store_host(store_url)
-    bare_host = host.removeprefix("www.")
+def normalize_product_url(raw_url: str) -> str:
     try:
         parts = urlsplit(raw_url.strip())
+        port = parts.port
     except ValueError as exc:
         raise ValueError("Enter a valid product URL") from exc
     if (
-        parts.scheme != "https"
-        or (parts.hostname or "").lower() not in (bare_host, f"www.{bare_host}")
+        parts.scheme.lower() != "https"
+        or (parts.hostname or "").lower() not in STORE_HOSTS
+        or port not in (None, 443)
         or parts.username
         or parts.password
         or not parts.path.strip("/")
     ):
-        raise ValueError(f"Only HTTPS product URLs from {bare_host} are allowed")
+        raise ValueError(f"Only HTTPS product URLs from {STORE_HOST} are allowed")
     path = parts.path if parts.path.endswith("/") else parts.path + "/"
-    return urlunsplit(("https", host, path, parts.query, ""))
+    return urlunsplit(("https", STORE_HOST, path, parts.query, ""))
 
 
 def init_database(db_path: Path = DATABASE_PATH) -> None:
@@ -501,47 +501,23 @@ def get_products_payload(db_path: Path = DATABASE_PATH) -> list[dict[str, object
     return result
 
 
-def parse_product_list(text: str) -> set[str]:
-    """Parse product URLs separated by newlines and/or commas. Lines starting with # are skipped."""
-    urls: set[str] = set()
-    for line_number, line in enumerate(text.splitlines(), start=1):
-        if line.strip().startswith("#"):
-            continue
-        for entry in line.split(","):
-            entry = entry.strip()
-            if not entry:
-                continue
-            try:
-                urls.add(normalize_product_url(entry))
-            except ValueError as exc:
-                raise ValueError(
-                    f"Invalid product URL on line {line_number}: {exc}"
-                ) from exc
-    return urls
-
-
-def read_product_list(products_file: Path | None = None) -> set[str]:
-    """Read product URLs from the given file, PRICE_TRACKER_PRODUCTS, or products.txt."""
-    if products_file is None:
-        inline = os.getenv("PRICE_TRACKER_PRODUCTS", "").strip()
-        if inline:
-            return parse_product_list(inline)
-        products_file = PRODUCTS_FILE
-    if not products_file.is_file():
-        raise ValueError(
-            f"Products file not found: {products_file}. "
-            "Create it or set PRICE_TRACKER_PRODUCTS."
-        )
-    return parse_product_list(products_file.read_text(encoding="utf-8"))
-
-
 def sync_products_from_file(
-    products_file: Path | None = None, db_path: Path = DATABASE_PATH
+    products_file: Path, db_path: Path = DATABASE_PATH
 ) -> tuple[int, int]:
-    return sync_products(read_product_list(products_file), db_path)
+    if not products_file.is_file():
+        raise ValueError(f"Products file not found: {products_file}")
+    urls: set[str] = set()
+    for line_number, line in enumerate(
+        products_file.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            urls.add(normalize_product_url(line))
+        except ValueError as exc:
+            raise ValueError(f"Invalid product URL on line {line_number}: {exc}") from exc
 
-
-def sync_products(urls: set[str], db_path: Path = DATABASE_PATH) -> tuple[int, int]:
     with closing(connect_database(db_path)) as db:
         existing = {
             row["url"]: row["id"]
@@ -570,7 +546,7 @@ def scrape_product(
     request = Request(
         url,
         headers={
-            "User-Agent": USER_AGENT,
+            "User-Agent": "Mozilla/5.0 (compatible; PriceTracker/1.0)",
             "Accept": "text/html,application/xhtml+xml",
         },
     )
@@ -711,7 +687,7 @@ def build_telegram_report(
     db_path: Path = DATABASE_PATH,
 ) -> tuple[bytes, str]:
     local_now = datetime.now(TIMEZONE)
-    title = f"Τιμές {store_display_name()} — {local_now:%d/%m/%Y}"
+    title = f"Τιμές {STORE_NAME} — {local_now:%d/%m/%Y}"
     caption = (
         f"{title}\n↓ Κάτω από την τελευταία τιμή · "
         "★ κάτω από τον ιστορικό μέσο όρο."
@@ -1028,8 +1004,7 @@ def app_status() -> dict[str, object]:
     return {
         "timezone": str(TIMEZONE),
         "daily_time": DAILY_TIME.strftime("%H:%M"),
-        "store_name": store_display_name(),
-        "store_url": STORE_URL,
+        "postal_code": POSTAL_CODE,
         "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
         "last_run_at": get_state("last_run_at"),
         "last_run_error": get_state("last_run_error"),
@@ -1050,7 +1025,7 @@ def is_scheduled_collection_due(
 
 
 class TrackerHandler(BaseHTTPRequestHandler):
-    server_version = "smartMarket/1.0"
+    server_version = "PriceTracker/1.0"
 
     def log_message(self, fmt: str, *args: object) -> None:
         logging.info("%s - %s", self.address_string(), fmt % args)
@@ -1186,7 +1161,7 @@ def main() -> None:
     import argparse
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    parser = argparse.ArgumentParser(description="smartMarket: a tiny daily price tracker")
+    parser = argparse.ArgumentParser(description="Price tracker")
     collection = parser.add_mutually_exclusive_group()
     collection.add_argument(
         "--collect",
@@ -1201,19 +1176,13 @@ def main() -> None:
     parser.add_argument(
         "--sync-products",
         type=Path,
-        nargs="?",
-        const=None,
-        default=False,
         metavar="FILE",
-        help=(
-            "Synchronize tracked products. Reads FILE if given, otherwise "
-            "PRICE_TRACKER_PRODUCTS, otherwise products.txt"
-        ),
+        help="Synchronize tracked products from a UTF-8 file containing one URL per line",
     )
     args = parser.parse_args()
 
     init_database()
-    if args.sync_products is not False:
+    if args.sync_products:
         try:
             added, removed = sync_products_from_file(args.sync_products)
         except (OSError, ValueError, sqlite3.Error) as exc:

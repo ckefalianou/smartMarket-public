@@ -1,4 +1,3 @@
-import os
 import sqlite3
 import unittest
 from datetime import datetime, time, timedelta
@@ -11,14 +10,10 @@ from zoneinfo import ZoneInfo
 
 from PIL import Image
 
-os.environ["PRICE_TRACKER_STORE_URL"] = "https://www.example-shop.com"
-os.environ["PRICE_TRACKER_STORE_NAME"] = "Example Shop"
-os.environ["PRICE_TRACKER_TIMEZONE"] = "Europe/Athens"
-os.environ.pop("PRICE_TRACKER_PRODUCTS", None)
-
 from app import (
     Promotion,
     ScrapeError,
+    STORE_NAME,
     build_telegram_report,
     build_telegram_report_rows,
     calculate_promotion_savings,
@@ -27,8 +22,6 @@ from app import (
     init_database,
     is_scheduled_collection_due,
     normalize_product_url,
-    parse_product_list,
-    read_product_list,
     parse_product_html,
     run_collection,
     send_telegram_photo,
@@ -102,45 +95,15 @@ class ProductParsingTests(unittest.TestCase):
         with self.assertRaisesRegex(ScrapeError, "does not contain a product price"):
             parse_product_html("<h1>Προϊόν</h1>")
 
-    def test_normalizes_product_url_from_the_configured_store(self) -> None:
+    def test_normalizes_configured_store_product_url(self) -> None:
         self.assertEqual(
-            normalize_product_url("https://example-shop.com/product/example#details"),
-            "https://www.example-shop.com/product/example/",
+            normalize_product_url("https://example.com/product/example#details"),
+            "https://www.example.com/product/example/",
         )
 
-    def test_rejects_urls_from_other_sites(self) -> None:
+    def test_rejects_urls_from_a_different_store(self) -> None:
         with self.assertRaisesRegex(ValueError, "Only HTTPS"):
-            normalize_product_url("https://another-shop.com/product")
-
-    def test_requires_a_configured_store(self) -> None:
-        with self.assertRaisesRegex(ValueError, "PRICE_TRACKER_STORE_URL"):
-            normalize_product_url("https://example-shop.com/product", store_url="")
-
-
-class ProductListTests(unittest.TestCase):
-    def test_accepts_newlines_commas_and_comments(self) -> None:
-        urls = parse_product_list(
-            "# my list\n"
-            "https://www.example-shop.com/a, https://www.example-shop.com/b\n"
-            "\n"
-            "https://www.example-shop.com/c\n"
-        )
-        self.assertEqual(
-            urls,
-            {
-                "https://www.example-shop.com/a/",
-                "https://www.example-shop.com/b/",
-                "https://www.example-shop.com/c/",
-            },
-        )
-
-    def test_environment_variable_overrides_the_products_file(self) -> None:
-        with patch.dict(
-            os.environ, {"PRICE_TRACKER_PRODUCTS": "https://www.example-shop.com/env"}
-        ):
-            self.assertEqual(
-                read_product_list(), {"https://www.example-shop.com/env/"}
-            )
+            normalize_product_url("https://another-example.com/product")
 
 
 class PriceHistoryTests(unittest.TestCase):
@@ -179,8 +142,8 @@ class ProductSyncTests(unittest.TestCase):
             product_file = root / "products.txt"
             init_database(database)
 
-            first_url = "https://www.example-shop.com/product/first/"
-            second_url = "https://www.example-shop.com/product/second/"
+            first_url = "https://www.example.com/product/first/"
+            second_url = "https://www.example.com/product/second/"
             product_file.write_text(f"{first_url}\n{second_url}\n", encoding="utf-8")
             self.assertEqual(sync_products_from_file(product_file, database), (2, 0))
 
@@ -196,7 +159,7 @@ class PromotionCollectionTests(unittest.TestCase):
             with sqlite3.connect(database) as db:
                 db.execute(
                     "INSERT INTO products(id, url) VALUES(?, ?)",
-                    ("napkins", "https://www.example-shop.com/product/napkins/"),
+                    ("napkins", "https://www.example.com/product/napkins/"),
                 )
                 db.commit()
 
@@ -225,7 +188,7 @@ class PromotionCollectionTests(unittest.TestCase):
             self.assertEqual(product["current_savings_per_bundle"], 1.5)
             send_photo.assert_called_once()
             self.assertTrue(send_photo.call_args.args[0].startswith(b"\x89PNG"))
-            self.assertIn("Τιμές Example Shop", send_photo.call_args.args[1])
+            self.assertIn(f"Τιμές {STORE_NAME}", send_photo.call_args.args[1])
 
 
 class TelegramTableTests(unittest.TestCase):
@@ -268,7 +231,7 @@ class TelegramTableTests(unittest.TestCase):
             with sqlite3.connect(database) as db:
                 db.execute(
                     "INSERT INTO products(id, url) VALUES(?, ?)",
-                    ("water", "https://www.example-shop.com/water/"),
+                    ("water", "https://www.example.com/water/"),
                 )
                 db.execute(
                     "INSERT INTO observations(product_id, observed_on, price, unit_price) "
@@ -291,7 +254,7 @@ class TelegramTableTests(unittest.TestCase):
             with Image.open(BytesIO(photo)) as image:
                 self.assertEqual(image.format, "PNG")
                 self.assertGreater(image.width, image.height)
-            self.assertIn("Τιμές Example Shop", caption)
+            self.assertIn(f"Τιμές {STORE_NAME}", caption)
 
     def test_marks_a_daily_drop_even_when_equal_to_the_historical_average(self) -> None:
         with TemporaryDirectory() as directory:
@@ -305,7 +268,7 @@ class TelegramTableTests(unittest.TestCase):
             with sqlite3.connect(database) as db:
                 db.execute(
                     "INSERT INTO products(id, url) VALUES(?, ?)",
-                    ("coffee", "https://www.example-shop.com/coffee/"),
+                    ("coffee", "https://www.example.com/coffee/"),
                 )
                 db.executemany(
                     "INSERT INTO observations(product_id, observed_on, price, unit_price) "
@@ -344,7 +307,7 @@ class TelegramTableTests(unittest.TestCase):
             patch("app.TELEGRAM_CHAT_ID", "test-chat"),
             patch("app.build_opener", return_value=opener),
         ):
-            send_telegram_photo(b"png-bytes", "Τιμές Example Shop")
+            send_telegram_photo(b"png-bytes", f"Τιμές {STORE_NAME}")
 
         request = opener.open.call_args.args[0]
         self.assertIn("multipart/form-data", request.get_header("Content-type"))

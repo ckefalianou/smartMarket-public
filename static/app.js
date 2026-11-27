@@ -125,13 +125,10 @@ async function refresh() {
   productsBody.replaceChildren(...products.map(renderProduct));
   emptyState.hidden = products.length > 0;
 
-  document.querySelector("#location-note").textContent = status.store_url
-    ? `Κατάστημα: ${status.store_name} (${status.store_url})`
-    : "Δεν έχει ρυθμιστεί κατάστημα. Όρισε PRICE_TRACKER_STORE_URL στο .env.";
-  document.querySelector("#store-name").textContent = status.store_name;
-  document.querySelector("#product-url").placeholder = status.store_url
-    ? `${status.store_url}/...`
-    : "https://...";
+  document.querySelector("#location-note").textContent = status.postal_code
+    ? `ΤΚ αναφοράς: ${status.postal_code}. Το site δεν αλλάζει αγορά με βάση τον ΤΚ· ` +
+      "οι τιμές ακολουθούν την online αγορά που εμφανίζει το ίδιο."
+    : "Οι τιμές ακολουθούν την online αγορά που εμφανίζει το site.";
   document.querySelector("#telegram-note").textContent = status.telegram_configured
     ? "Το Telegram είναι ρυθμισμένο. Η χειροκίνητη συλλογή στέλνει επίσης αναφορά."
     : "Το Telegram δεν έχει ρυθμιστεί ακόμη. Πρόσθεσε TELEGRAM_BOT_TOKEN και TELEGRAM_CHAT_ID στο .env.";
