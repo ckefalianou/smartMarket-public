@@ -1,10 +1,9 @@
-# Price Tracker
+# SmartMarket
 
-A small, self-hosted tracker for online grocery product prices. It records
-daily prices, keeps local history in SQLite, and can send a Telegram report
-showing price drops, below-average prices, and multi-buy offers converted to
-an effective per-item price. A local dashboard displays tracked products and
-their history.
+A small, self-hosted tracker for product prices. It records daily prices,
+keeps local history in SQLite, and can send a Telegram report showing price
+drops, below-average prices, and multi-buy offers converted to an effective
+per-item price. A local dashboard displays tracked products and their history.
 
 The repository contains application code and examples only. Do not commit your
 `.env`, `products.txt`, or `data/prices.sqlite3`; these are ignored by Git.
